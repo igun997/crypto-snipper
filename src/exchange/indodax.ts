@@ -65,26 +65,39 @@ export class IndodaxExchange {
   }
 
   private marketsLoaded: boolean = false;
+  // Store original market IDs for public API (OHLCV uses original format)
+  private originalMarketIds: Map<string, string> = new Map();
 
   async loadMarkets(force: boolean = false): Promise<void> {
     if (!this.marketsLoaded || force) {
       await this.exchange.loadMarkets();
 
-      // Fix market IDs for Indodax private API
-      // The API expects 'sol_idr' format but CCXT has 'solidr'
+      // Store original IDs and fix for Indodax private API
+      // Private API expects 'sol_idr' format but CCXT has 'solidr'
+      // Public API (OHLCV) works with original format
       for (const symbol of Object.keys(this.exchange.markets)) {
         const market = this.exchange.markets[symbol];
         if (market && market.base && market.quote) {
-          // Convert to underscore format: SOL/IDR -> sol_idr
-          const correctId = `${market.base.toLowerCase()}_${market.quote.toLowerCase()}`;
-          if (market.id !== correctId) {
-            market.id = correctId;
+          // Store original ID for public API calls
+          this.originalMarketIds.set(symbol, market.id);
+
+          // Convert to underscore format for private API: SOL/IDR -> sol_idr
+          const privateApiId = `${market.base.toLowerCase()}_${market.quote.toLowerCase()}`;
+          if (market.id !== privateApiId) {
+            market.id = privateApiId;
           }
         }
       }
 
       this.marketsLoaded = true;
     }
+  }
+
+  /**
+   * Get original market ID for public API calls
+   */
+  private getOriginalMarketId(symbol: string): string | undefined {
+    return this.originalMarketIds.get(symbol);
   }
 
   /**
@@ -123,7 +136,24 @@ export class IndodaxExchange {
     // Normalize symbol
     const normalizedSymbol = this.normalizeSymbol(symbol);
 
-    const ohlcv: OHLCV[] = await this.exchange.fetchOHLCV(normalizedSymbol, timeframe, since, limit);
+    // Temporarily restore original market ID for public API call
+    const market = this.exchange.markets[normalizedSymbol];
+    const originalId = this.originalMarketIds.get(normalizedSymbol);
+    const currentId = market?.id;
+
+    if (market && originalId) {
+      market.id = originalId;
+    }
+
+    let ohlcv: OHLCV[];
+    try {
+      ohlcv = await this.exchange.fetchOHLCV(normalizedSymbol, timeframe, since, limit);
+    } finally {
+      // Restore private API format
+      if (market && currentId) {
+        market.id = currentId;
+      }
+    }
 
     return ohlcv.map((candle) => ({
       timestamp: candle[0] as number,
