@@ -144,6 +144,111 @@ export class DataFetcher {
     return priceRepo.getSymbols();
   }
 
+  /**
+   * Fetch 1 month of historical data for a symbol
+   * Uses multiple timeframes for comprehensive coverage:
+   * - 15m candles for ~1 month (2880 candles)
+   * - 1m candles for recent 200 candles (for scalping)
+   *
+   * @param symbol Trading pair symbol (e.g., 'BTC/IDR')
+   * @param onProgress Optional callback for progress updates
+   * @returns Total candles fetched
+   */
+  async fetchHistorical(
+    symbol: string,
+    onProgress?: (phase: string, progress: number) => void
+  ): Promise<{ total: number; timeframes: Record<string, number> }> {
+    const results: Record<string, number> = {};
+    let totalCandles = 0;
+
+    try {
+      // Phase 1: Fetch 1 month of 15m candles (main historical data)
+      // 30 days * 24 hours * 4 (15m intervals) = 2880 candles
+      // Most exchanges limit to ~1000 per request, so we fetch in batches
+      onProgress?.('Fetching 15m candles (1 month)', 10);
+
+      const candles15m = await this.fetchWithPagination(symbol, '15m', 3000);
+      results['15m'] = candles15m;
+      totalCandles += candles15m;
+
+      onProgress?.('Fetching 15m candles (1 month)', 40);
+
+      // Phase 2: Fetch 1h candles for longer trend analysis
+      // 30 days * 24 hours = 720 candles
+      onProgress?.('Fetching 1h candles', 50);
+
+      const candles1h = await this.fetchWithPagination(symbol, '1h', 720);
+      results['1h'] = candles1h;
+      totalCandles += candles1h;
+
+      onProgress?.('Fetching 1h candles', 70);
+
+      // Phase 3: Fetch recent 1m candles for scalping (last ~3 hours)
+      onProgress?.('Fetching 1m candles (recent)', 80);
+
+      const candles1m = await indodax.fetchOHLCV(symbol, '1m', 200);
+      const records1m = priceRepo.candlesToRecords(symbol, candles1m);
+      priceRepo.insertMany(records1m);
+      results['1m'] = records1m.length;
+      totalCandles += records1m.length;
+
+      onProgress?.('Complete', 100);
+
+      return { total: totalCandles, timeframes: results };
+    } catch (error) {
+      console.error(`[DataFetcher] Failed to fetch historical data for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch candles with pagination for large datasets
+   * Handles exchange limits by fetching in batches
+   */
+  private async fetchWithPagination(
+    symbol: string,
+    timeframe: string,
+    targetCandles: number
+  ): Promise<number> {
+    const batchSize = 500; // Safe batch size for most exchanges
+    let totalFetched = 0;
+    let since: number | undefined = undefined;
+
+    const tfMs = TIMEFRAME_MS[timeframe] || 15 * 60 * 1000;
+
+    // Start from targetCandles ago
+    since = Date.now() - (targetCandles * tfMs);
+
+    while (totalFetched < targetCandles) {
+      const limit = Math.min(batchSize, targetCandles - totalFetched);
+
+      try {
+        const candles = await indodax.fetchOHLCV(symbol, timeframe, limit);
+
+        if (candles.length === 0) break;
+
+        const records = priceRepo.candlesToRecords(symbol, candles);
+        priceRepo.insertMany(records);
+        totalFetched += records.length;
+
+        // Move since to after the last candle
+        const lastTimestamp = candles[candles.length - 1].timestamp;
+        since = lastTimestamp + tfMs;
+
+        // If we got fewer candles than requested, we've reached the end
+        if (candles.length < limit) break;
+
+        // Rate limiting
+        await this.sleep(300);
+      } catch (error) {
+        console.error(`[DataFetcher] Batch fetch error for ${symbol} ${timeframe}:`, error);
+        break;
+      }
+    }
+
+    return totalFetched;
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }

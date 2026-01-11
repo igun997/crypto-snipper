@@ -1095,11 +1095,19 @@ export class TelegramBot extends EventEmitter {
     await this.updateSubscriptionMenu(ctx);
 
     try {
-      // Prefetch historical data
-      const result = await dataFetcher.smartFetch(symbol, '1m', 200);
+      // Fetch 1 month of historical data with progress updates
+      const sub = this.symbolSubscriptions.get(symbol);
+
+      const result = await dataFetcher.fetchHistorical(symbol, (phase, progress) => {
+        if (sub) {
+          sub.status = 'prefetching';
+          sub.lastUpdate = Date.now();
+        }
+        // Log progress for debugging
+        console.log(`[Subscribe] ${symbol}: ${phase} (${progress}%)`);
+      });
 
       // Update candle count
-      const sub = this.symbolSubscriptions.get(symbol);
       if (sub) {
         sub.candleCount = result.total;
         sub.status = 'connecting';
@@ -1122,6 +1130,18 @@ export class TelegramBot extends EventEmitter {
       }
 
       await this.updateSubscriptionMenu(ctx);
+
+      // Send summary notification
+      const timeframeSummary = Object.entries(result.timeframes)
+        .map(([tf, count]) => `${tf}: ${count}`)
+        .join(', ');
+
+      await ctx.reply(
+        `✅ Subscribed to ${symbol}\n\n` +
+        `📊 Historical data: ${result.total} candles\n` +
+        `📈 Timeframes: ${timeframeSummary}\n` +
+        `🔴 WebSocket: Connected`
+      );
 
     } catch (error) {
       const sub = this.symbolSubscriptions.get(symbol);
