@@ -145,10 +145,9 @@ export class DataFetcher {
   }
 
   /**
-   * Fetch 1 month of historical data for a symbol
-   * Uses multiple timeframes for comprehensive coverage:
-   * - 15m candles for ~1 month (2880 candles)
-   * - 1m candles for recent 200 candles (for scalping)
+   * Fetch historical data for a symbol
+   * Fetches maximum available candles from exchange for each timeframe
+   * Note: Indodax typically provides ~1000 candles max per request
    *
    * @param symbol Trading pair symbol (e.g., 'BTC/IDR')
    * @param onProgress Optional callback for progress updates
@@ -162,34 +161,39 @@ export class DataFetcher {
     let totalCandles = 0;
 
     try {
-      // Phase 1: Fetch 1 month of 15m candles (main historical data)
-      // 30 days * 24 hours * 4 (15m intervals) = 2880 candles
-      onProgress?.('Fetching 15m candles (1 month)', 10);
+      // Phase 1: Fetch 15m candles (max available, typically ~1000)
+      onProgress?.('Fetching 15m candles', 10);
 
-      const candles15m = await this.fetchWithPagination(symbol, '15m', 2880);
+      const candles15m = await this.fetchMaxCandles(symbol, '15m');
       results['15m'] = candles15m;
       totalCandles += candles15m;
 
-      onProgress?.('Fetching 15m candles complete', 40);
+      onProgress?.('Fetching 15m complete', 30);
 
-      // Phase 2: Fetch 1h candles for longer trend analysis
-      // 30 days * 24 hours = 720 candles
-      onProgress?.('Fetching 1h candles', 50);
+      // Phase 2: Fetch 1h candles for trend analysis
+      onProgress?.('Fetching 1h candles', 40);
 
-      const candles1h = await this.fetchWithPagination(symbol, '1h', 720);
+      const candles1h = await this.fetchMaxCandles(symbol, '1h');
       results['1h'] = candles1h;
       totalCandles += candles1h;
 
-      onProgress?.('Fetching 1h candles complete', 70);
+      onProgress?.('Fetching 1h complete', 60);
 
-      // Phase 3: Fetch recent 1m candles for scalping (last ~3 hours)
-      onProgress?.('Fetching 1m candles (recent)', 80);
+      // Phase 3: Fetch 1d candles for long-term trend
+      onProgress?.('Fetching 1d candles', 70);
 
-      const candles1m = await indodax.fetchOHLCV(symbol, '1m', 200);
-      const records1m = priceRepo.candlesToRecords(symbol, candles1m);
-      priceRepo.insertMany(records1m);
-      results['1m'] = records1m.length;
-      totalCandles += records1m.length;
+      const candles1d = await this.fetchMaxCandles(symbol, '1d');
+      results['1d'] = candles1d;
+      totalCandles += candles1d;
+
+      onProgress?.('Fetching 1d complete', 80);
+
+      // Phase 4: Fetch 1m candles for scalping
+      onProgress?.('Fetching 1m candles', 90);
+
+      const candles1m = await this.fetchMaxCandles(symbol, '1m');
+      results['1m'] = candles1m;
+      totalCandles += candles1m;
 
       onProgress?.('Complete', 100);
 
@@ -201,65 +205,42 @@ export class DataFetcher {
   }
 
   /**
-   * Fetch candles with pagination for large datasets
-   * Uses 'since' parameter to fetch historical data in batches
+   * Fetch maximum available candles for a timeframe
+   * Indodax typically provides up to ~1000 candles
    */
-  private async fetchWithPagination(
-    symbol: string,
-    timeframe: string,
-    targetCandles: number
-  ): Promise<number> {
-    const batchSize = 500; // Safe batch size for most exchanges
-    let totalFetched = 0;
+  private async fetchMaxCandles(symbol: string, timeframe: string): Promise<number> {
+    try {
+      // Request max candles (most exchanges cap at 1000)
+      const limit = 1000;
 
-    const tfMs = TIMEFRAME_MS[timeframe] || 15 * 60 * 1000;
+      console.log(`[DataFetcher] Fetching ${timeframe} candles for ${symbol} (limit=${limit})`);
 
-    // Calculate start time (targetCandles ago from now)
-    let since = Date.now() - (targetCandles * tfMs);
+      const candles = await indodax.fetchOHLCV(symbol, timeframe, limit);
 
-    console.log(`[DataFetcher] Fetching ${targetCandles} ${timeframe} candles for ${symbol}, starting from ${new Date(since).toISOString()}`);
+      console.log(`[DataFetcher] Got ${candles.length} ${timeframe} candles`);
 
-    while (totalFetched < targetCandles) {
-      const limit = Math.min(batchSize, targetCandles - totalFetched);
-
-      try {
-        console.log(`[DataFetcher] Batch fetch: since=${new Date(since).toISOString()}, limit=${limit}`);
-
-        const candles = await indodax.fetchOHLCV(symbol, timeframe, limit, since);
-
-        console.log(`[DataFetcher] Got ${candles.length} candles`);
-
-        if (candles.length === 0) {
-          console.log(`[DataFetcher] No more candles available`);
-          break;
-        }
-
-        const records = priceRepo.candlesToRecords(symbol, candles);
-        priceRepo.insertMany(records);
-        totalFetched += records.length;
-
-        // Move since to after the last candle for next batch
-        const lastTimestamp = candles[candles.length - 1].timestamp;
-        since = lastTimestamp + tfMs;
-
-        console.log(`[DataFetcher] Total fetched: ${totalFetched}, next since: ${new Date(since).toISOString()}`);
-
-        // If we got fewer candles than requested, we've reached the end
-        if (candles.length < limit) {
-          console.log(`[DataFetcher] Received fewer candles than limit, ending pagination`);
-          break;
-        }
-
-        // Rate limiting - be gentle with the API
-        await this.sleep(500);
-      } catch (error) {
-        console.error(`[DataFetcher] Batch fetch error for ${symbol} ${timeframe}:`, error);
-        break;
+      if (candles.length === 0) {
+        return 0;
       }
-    }
 
-    console.log(`[DataFetcher] Final total for ${symbol} ${timeframe}: ${totalFetched} candles`);
-    return totalFetched;
+      const records = priceRepo.candlesToRecords(symbol, candles);
+      priceRepo.insertMany(records);
+
+      // Calculate time span
+      const oldest = new Date(candles[0].timestamp);
+      const newest = new Date(candles[candles.length - 1].timestamp);
+      const days = Math.round((newest.getTime() - oldest.getTime()) / (1000 * 60 * 60 * 24));
+
+      console.log(`[DataFetcher] ${symbol} ${timeframe}: ${candles.length} candles spanning ${days} days (${oldest.toISOString()} to ${newest.toISOString()})`);
+
+      // Rate limiting
+      await this.sleep(300);
+
+      return records.length;
+    } catch (error) {
+      console.error(`[DataFetcher] Error fetching ${timeframe} for ${symbol}:`, error);
+      return 0;
+    }
   }
 
   private sleep(ms: number): Promise<void> {
