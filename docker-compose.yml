@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  crypto-snipper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crypto-snipper-bot
+    restart: unless-stopped
+    environment:
+      # Telegram Bot (required)
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ADMIN_IDS=${TELEGRAM_ADMIN_IDS}
+
+      # Encryption keys for API credential storage (required)
+      - ENCRYPTION_MASTER_KEY=${ENCRYPTION_MASTER_KEY}
+      - ENCRYPTION_SALT=${ENCRYPTION_SALT}
+
+      # Indodax API (optional - for direct trading)
+      - INDODAX_API_KEY=${INDODAX_API_KEY:-}
+      - INDODAX_SECRET=${INDODAX_SECRET:-}
+
+      # Twitter/X API (optional - for sentiment analysis)
+      - TWITTER_BEARER_TOKEN=${TWITTER_BEARER_TOKEN:-}
+
+      # App settings
+      - NODE_ENV=production
+      - DB_PATH=/app/data/crypto-snipper.db
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DEFAULT_INTERVAL=${DEFAULT_INTERVAL:-15}
+    volumes:
+      # Persist database
+      - crypto-snipper-data:/app/data
+    networks:
+      - crypto-snipper-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  crypto-snipper-data:
+    name: crypto-snipper-data
+
+networks:
+  crypto-snipper-net:
+    name: crypto-snipper-net

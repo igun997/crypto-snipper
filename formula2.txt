@@ -1,0 +1,30 @@
+Untuk menggabungkan model **ARIMAX (Auto-Regressive Integrated Moving Average with Exogenous Variables)** dengan data sentimen dari platform **X (Twitter)**, data sentimen tersebut harus diperlakukan sebagai **variabel eksogen ($X_t$)** dalam persamaan statistik.
+
+Berikut adalah rumus perhitungan dan penjelasan variabelnya berdasarkan informasi dari sumber-sumber yang tersedia:
+
+### Rumus Utama ARIMAX dengan Sentimen X
+Berdasarkan spesifikasi model yang menggabungkan struktur autoregresif dengan sinyal eksternal, rumusnya adalah:
+
+$$y_t = c + \sum_{i=1}^p \phi_i y_{t-i} + \sum_{j=1}^q \theta_j \varepsilon_{t-j} + \beta X_t + \varepsilon_t$$
+
+### Penjelasan Variabel
+1.  **$y_t$**: Nilai harga Bitcoin yang diprediksi pada waktu $t$.
+2.  **$c$**: Konstanta atau nilai *intercept* model.
+3.  **$\sum_{i=1}^p \phi_i y_{t-i}$ (Komponen AR)**: Pengaruh harga historis Bitcoin pada jeda waktu (*lag*) tertentu ($p$) terhadap harga saat ini.
+4.  **$\sum_{j=1}^q \theta_j \varepsilon_{t-j}$ (Komponen MA)**: Pengaruh dari kesalahan prediksi (*residual errors*) di masa lalu ($q$) yang dianggap sebagai *white noise*.
+5.  **$\beta X_t$ (Komponen Eksogen - Inti Integrasi)**:
+    *   **$X_t$**: Vektor yang berisi variabel eksternal. Dalam konteks ini, $X_t$ mencakup **skor sentimen harian** yang diekstraksi dari X menggunakan model seperti **FinBERT** atau **RoBERTa**, serta data pasar lainnya (volume perdagangan, kapitalisasi pasar).
+    *   **$\beta$**: Koefisien regresi yang menentukan seberapa besar kekuatan pengaruh sentimen X terhadap pergerakan harga.
+6.  **$\varepsilon_t$**: Residu atau galat pada waktu $t$.
+
+### Tahapan Penggabungan Data Sentimen
+Agar sentimen dari X dapat masuk ke dalam rumus di atas, diperlukan proses pengolahan sebagai berikut:
+*   **Ekstraksi Skor:** Teks dari X diklasifikasikan menjadi tiga kelas: **positif, netral, dan negatif**.
+*   **Vektorisasi Sentimen:** Hasil klasifikasi ini dirata-ratakan secara harian untuk membentuk vektor sentimen harian ($s_t$) yang kemudian dimasukkan ke dalam variabel $X_t$.
+*   **Normalisasi:** Data sentimen dan data pasar lainnya sering kali dinormalisasi (misalnya menggunakan *Min-Max Scaling*) sebelum dihitung untuk menjaga stabilitas numerik model.
+
+### Mengapa Integrasi Ini Penting?
+Model ARIMAX dianggap lebih unggul daripada ARIMA biasa karena kemampuannya menangkap **sinyal kontekstual**. Sentimen dari X memberikan wawasan mengenai perilaku pasar kolektif yang sering kali menjadi penggerak utama volatilitas Bitcoin sebelum sinyal tersebut muncul di data harga murni.
+
+**Analogi:**
+Menggunakan ARIMAX dengan sentimen X ibarat **berlayar dengan kapal yang memiliki kompas tradisional (data harga masa lalu) sekaligus radio cuaca (sentimen X).** Kompas memberi tahu Anda ke arah mana kapal telah bergerak, sementara radio cuaca memberi tahu Anda apakah ada "badai emosi" dari para pedagang di media sosial yang akan mengubah arah angin secara tiba-tiba di depan nanti. [Berdasarkan analogi dari konsep sinyal kontekstual dalam sumber].
