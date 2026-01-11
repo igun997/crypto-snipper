@@ -115,14 +115,15 @@ export class IndodaxExchange {
   async fetchOHLCV(
     symbol: string,
     timeframe: string = '15m',
-    limit: number = 100
+    limit: number = 100,
+    since?: number
   ): Promise<Candle[]> {
     await this.loadMarkets();
 
     // Normalize symbol
     const normalizedSymbol = this.normalizeSymbol(symbol);
 
-    const ohlcv: OHLCV[] = await this.exchange.fetchOHLCV(normalizedSymbol, timeframe, undefined, limit);
+    const ohlcv: OHLCV[] = await this.exchange.fetchOHLCV(normalizedSymbol, timeframe, since, limit);
 
     return ohlcv.map((candle) => ({
       timestamp: candle[0] as number,

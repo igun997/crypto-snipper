@@ -164,14 +164,13 @@ export class DataFetcher {
     try {
       // Phase 1: Fetch 1 month of 15m candles (main historical data)
       // 30 days * 24 hours * 4 (15m intervals) = 2880 candles
-      // Most exchanges limit to ~1000 per request, so we fetch in batches
       onProgress?.('Fetching 15m candles (1 month)', 10);
 
-      const candles15m = await this.fetchWithPagination(symbol, '15m', 3000);
+      const candles15m = await this.fetchWithPagination(symbol, '15m', 2880);
       results['15m'] = candles15m;
       totalCandles += candles15m;
 
-      onProgress?.('Fetching 15m candles (1 month)', 40);
+      onProgress?.('Fetching 15m candles complete', 40);
 
       // Phase 2: Fetch 1h candles for longer trend analysis
       // 30 days * 24 hours = 720 candles
@@ -181,7 +180,7 @@ export class DataFetcher {
       results['1h'] = candles1h;
       totalCandles += candles1h;
 
-      onProgress?.('Fetching 1h candles', 70);
+      onProgress?.('Fetching 1h candles complete', 70);
 
       // Phase 3: Fetch recent 1m candles for scalping (last ~3 hours)
       onProgress?.('Fetching 1m candles (recent)', 80);
@@ -203,7 +202,7 @@ export class DataFetcher {
 
   /**
    * Fetch candles with pagination for large datasets
-   * Handles exchange limits by fetching in batches
+   * Uses 'since' parameter to fetch historical data in batches
    */
   private async fetchWithPagination(
     symbol: string,
@@ -212,40 +211,54 @@ export class DataFetcher {
   ): Promise<number> {
     const batchSize = 500; // Safe batch size for most exchanges
     let totalFetched = 0;
-    let since: number | undefined = undefined;
 
     const tfMs = TIMEFRAME_MS[timeframe] || 15 * 60 * 1000;
 
-    // Start from targetCandles ago
-    since = Date.now() - (targetCandles * tfMs);
+    // Calculate start time (targetCandles ago from now)
+    let since = Date.now() - (targetCandles * tfMs);
+
+    console.log(`[DataFetcher] Fetching ${targetCandles} ${timeframe} candles for ${symbol}, starting from ${new Date(since).toISOString()}`);
 
     while (totalFetched < targetCandles) {
       const limit = Math.min(batchSize, targetCandles - totalFetched);
 
       try {
-        const candles = await indodax.fetchOHLCV(symbol, timeframe, limit);
+        console.log(`[DataFetcher] Batch fetch: since=${new Date(since).toISOString()}, limit=${limit}`);
 
-        if (candles.length === 0) break;
+        const candles = await indodax.fetchOHLCV(symbol, timeframe, limit, since);
+
+        console.log(`[DataFetcher] Got ${candles.length} candles`);
+
+        if (candles.length === 0) {
+          console.log(`[DataFetcher] No more candles available`);
+          break;
+        }
 
         const records = priceRepo.candlesToRecords(symbol, candles);
         priceRepo.insertMany(records);
         totalFetched += records.length;
 
-        // Move since to after the last candle
+        // Move since to after the last candle for next batch
         const lastTimestamp = candles[candles.length - 1].timestamp;
         since = lastTimestamp + tfMs;
 
-        // If we got fewer candles than requested, we've reached the end
-        if (candles.length < limit) break;
+        console.log(`[DataFetcher] Total fetched: ${totalFetched}, next since: ${new Date(since).toISOString()}`);
 
-        // Rate limiting
-        await this.sleep(300);
+        // If we got fewer candles than requested, we've reached the end
+        if (candles.length < limit) {
+          console.log(`[DataFetcher] Received fewer candles than limit, ending pagination`);
+          break;
+        }
+
+        // Rate limiting - be gentle with the API
+        await this.sleep(500);
       } catch (error) {
         console.error(`[DataFetcher] Batch fetch error for ${symbol} ${timeframe}:`, error);
         break;
       }
     }
 
+    console.log(`[DataFetcher] Final total for ${symbol} ${timeframe}: ${totalFetched} candles`);
     return totalFetched;
   }
 
