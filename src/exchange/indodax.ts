@@ -279,6 +279,10 @@ export class IndodaxExchange {
   /**
    * Create a market or limit order
    */
+  // Rate limiting for API calls
+  private lastOrderTime: number = 0;
+  private readonly minOrderInterval: number = 1000; // 1 second between orders
+
   async createOrder(
     symbol: string,
     type: 'market' | 'limit',
@@ -289,6 +293,14 @@ export class IndodaxExchange {
     if (!this.hasCredentials()) {
       throw new Error('API credentials required for trading');
     }
+
+    // Rate limiting - wait if needed
+    const now = Date.now();
+    const timeSinceLastOrder = now - this.lastOrderTime;
+    if (timeSinceLastOrder < this.minOrderInterval) {
+      await new Promise(resolve => setTimeout(resolve, this.minOrderInterval - timeSinceLastOrder));
+    }
+    this.lastOrderTime = Date.now();
 
     await this.loadMarkets();
 
@@ -311,14 +323,24 @@ export class IndodaxExchange {
         throw new Error(`Amount ${amount} is below minimum ${minAmount} for ${normalizedSymbol}`);
       }
 
-      console.log(`[Indodax] Creating ${type} ${side} order: ${normalizedSymbol} amount=${amount} price=${price || 'market'}`);
+      // For market buy orders on Indodax, we need to provide the price
+      // to calculate total cost (amount * price)
+      let orderPrice = price;
+      if (type === 'market' && side === 'buy' && !orderPrice) {
+        // Fetch current ticker to get price for market buy
+        const ticker = await this.exchange.fetchTicker(normalizedSymbol);
+        orderPrice = ticker.ask || ticker.last; // Use ask price for buying
+        console.log(`[Indodax] Market buy requires price, using ask: ${orderPrice}`);
+      }
+
+      console.log(`[Indodax] Creating ${type} ${side} order: ${normalizedSymbol} amount=${amount} price=${orderPrice || 'market'}`);
 
       const order = await this.exchange.createOrder(
         normalizedSymbol,
         type,
         side,
         amount,
-        type === 'limit' ? price : undefined
+        type === 'market' && side === 'buy' ? orderPrice : (type === 'limit' ? price : undefined)
       );
 
       console.log(`[Indodax] Order created: ${order.id}`);
