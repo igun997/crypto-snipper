@@ -1123,10 +1123,19 @@ export class TelegramBot extends EventEmitter {
       // Subscribe to realtime updates
       await realtimeFetcher.subscribe(symbol);
 
-      // Mark as ready
+      // Mark as ready (or analyzing if scalp is running)
       if (sub) {
-        sub.status = 'ready';
         sub.lastUpdate = Date.now();
+
+        // If scalp is running, add this symbol and set to analyzing
+        if (this.scalpWorker.isRunning) {
+          if (!this.scalpWorker.symbols.includes(symbol)) {
+            this.scalpWorker.symbols.push(symbol);
+          }
+          sub.status = 'analyzing';
+        } else {
+          sub.status = 'ready';
+        }
       }
 
       await this.updateSubscriptionMenu(ctx);
@@ -1136,11 +1145,15 @@ export class TelegramBot extends EventEmitter {
         .map(([tf, count]) => `${tf}: ${count}`)
         .join(', ');
 
+      const scalpNote = this.scalpWorker.isRunning
+        ? `\n⚡ Added to active scalp worker!`
+        : '';
+
       await ctx.reply(
         `✅ Subscribed to ${symbol}\n\n` +
         `📊 Historical data: ${result.total} candles\n` +
         `📈 Timeframes: ${timeframeSummary}\n` +
-        `🔴 WebSocket: Connected`
+        `🔴 WebSocket: Connected${scalpNote}`
       );
 
     } catch (error) {
@@ -1451,10 +1464,17 @@ export class TelegramBot extends EventEmitter {
       return;
     }
 
-    realtimeFetcher.disconnect();
+    // Remove scalp-specific listeners (but keep WebSocket connected for subscriptions)
     scalper.removeAllListeners('signal');
     scalper.removeAllListeners('exit');
     realtimeFetcher.removeAllListeners('price');
+
+    // Reset subscription statuses from 'analyzing' back to 'ready'
+    for (const sub of this.symbolSubscriptions.values()) {
+      if (sub.status === 'analyzing') {
+        sub.status = 'ready';
+      }
+    }
 
     const duration = this.scalpWorker.startedAt
       ? Math.round((Date.now() - this.scalpWorker.startedAt.getTime()) / 1000 / 60)
@@ -1465,7 +1485,8 @@ export class TelegramBot extends EventEmitter {
     await ctx.editMessageText(
       `🛑 Scalp Worker Stopped\n\n` +
       `Duration: ${duration} minutes\n` +
-      `Signals: ${this.scalpWorker.signalCount}`,
+      `Signals: ${this.scalpWorker.signalCount}\n\n` +
+      `📡 Subscriptions preserved (WebSocket still connected)`,
       this.buildScalpMenu()
     );
   }
