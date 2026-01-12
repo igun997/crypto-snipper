@@ -38,6 +38,7 @@ interface ScalpWorkerConfig {
   autoExecute: boolean;
   dryRunMode: boolean;
   dryRunBalance: number; // IDR
+  tradingMode: 'long_only' | 'short_only' | 'both'; // Filter signals by direction
 }
 
 // Scalp worker state
@@ -94,6 +95,7 @@ export class TelegramBot extends EventEmitter {
       autoExecute: false,
       dryRunMode: false,
       dryRunBalance: 10000000, // 10 million IDR
+      tradingMode: 'long_only', // Default to long only (buy with IDR)
     },
   };
 
@@ -374,6 +376,8 @@ export class TelegramBot extends EventEmitter {
       [Markup.button.callback(`Dry Run: ${cfg.dryRunMode ? 'ON' : 'OFF'}`, 'config_dryrun_toggle')],
       // Dry run balance (only show if dry run enabled)
       ...(cfg.dryRunMode ? [[Markup.button.callback(`Balance: Rp ${this.formatNumber(cfg.dryRunBalance)}`, 'input_dryrun_balance')]] : []),
+      // Trading mode toggle
+      [Markup.button.callback(`Mode: ${cfg.tradingMode === 'long_only' ? 'LONG Only' : cfg.tradingMode === 'short_only' ? 'SHORT Only' : 'Both'}`, 'config_mode_toggle')],
       // Symbols
       [Markup.button.callback(`Symbols: ${cfg.symbols.join(', ')}`, 'input_scalp_symbols')],
       // Actions
@@ -1117,6 +1121,28 @@ export class TelegramBot extends EventEmitter {
         this.buildScalpConfigMenu()
       );
       await ctx.answerCbQuery(`Dry Run: ${this.scalpWorker.config.dryRunMode ? 'ON' : 'OFF'}`);
+      return;
+    }
+
+    if (config === 'mode_toggle') {
+      // Cycle through modes: long_only -> short_only -> both -> long_only
+      const currentMode = this.scalpWorker.config.tradingMode;
+      let newMode: 'long_only' | 'short_only' | 'both';
+      if (currentMode === 'long_only') {
+        newMode = 'short_only';
+      } else if (currentMode === 'short_only') {
+        newMode = 'both';
+      } else {
+        newMode = 'long_only';
+      }
+      this.scalpWorker.config.tradingMode = newMode;
+
+      const modeLabel = newMode === 'long_only' ? 'LONG Only' : newMode === 'short_only' ? 'SHORT Only' : 'Both';
+      await ctx.editMessageText(
+        '⚙️ Scalp Configuration\n\nAdjust settings with +/- buttons:',
+        this.buildScalpConfigMenu()
+      );
+      await ctx.answerCbQuery(`Mode: ${modeLabel}`);
       return;
     }
   }
@@ -3001,6 +3027,59 @@ Examples:
     }
   }
 
+  /**
+   * Check if account has sufficient balance for a signal
+   * Returns { ok: true } if can execute, { ok: false, reason: string } if not
+   */
+  private async checkBalanceForSignal(
+    accountId: number,
+    signal: ScalpSignal
+  ): Promise<{ ok: boolean; reason?: string }> {
+    try {
+      const result = await tradingExecutor.getBalance(accountId);
+      if (!result.success || !result.balances) {
+        return { ok: false, reason: 'Failed to fetch balance' };
+      }
+
+      const [base, quote] = signal.symbol.split('/');
+      const amountPercent = 10; // Use 10% of balance
+      const minTradeValue = 10000; // Minimum 10k IDR worth
+
+      if (signal.direction === 'long') {
+        // LONG = buy crypto with IDR
+        const quoteBalance = result.balances.find(b => b.currency === quote);
+        const available = quoteBalance?.free || 0;
+
+        if (available < minTradeValue) {
+          return {
+            ok: false,
+            reason: `Insufficient ${quote} (have ${this.formatNumber(available)}, need min ${this.formatNumber(minTradeValue)})`
+          };
+        }
+
+        return { ok: true };
+      } else {
+        // SHORT = sell crypto for IDR
+        const baseBalance = result.balances.find(b => b.currency === base);
+        const available = baseBalance?.free || 0;
+
+        // Calculate minimum crypto amount needed
+        const minCryptoAmount = minTradeValue / signal.price;
+
+        if (available < minCryptoAmount) {
+          return {
+            ok: false,
+            reason: `No ${base} to sell (need ${base} balance for SHORT, you only have IDR)`
+          };
+        }
+
+        return { ok: true };
+      }
+    } catch (error) {
+      return { ok: false, reason: `Balance check error: ${error}` };
+    }
+  }
+
   // Event handlers
   private async handlePositionAutoClosed(data: any): Promise<void> {
     // Notify all users with positions
@@ -3158,6 +3237,17 @@ Examples:
    * Broadcast scalp signal to all authorized users
    */
   async broadcastScalpSignal(signal: ScalpSignal, autoExecute: boolean = false): Promise<void> {
+    // Filter signals based on trading mode config
+    const tradingMode = this.scalpWorker.config.tradingMode;
+    if (tradingMode === 'long_only' && signal.direction !== 'long') {
+      console.log(`  [TelegramBot] Skipping ${signal.direction.toUpperCase()} signal - trading mode is LONG only`);
+      return;
+    }
+    if (tradingMode === 'short_only' && signal.direction !== 'short') {
+      console.log(`  [TelegramBot] Skipping ${signal.direction.toUpperCase()} signal - trading mode is SHORT only`);
+      return;
+    }
+
     const users = telegramAccountRepo.getAllUsers(true);
     const directionEmoji = signal.direction === 'long' ? '🟢 LONG' : '🔴 SHORT';
 
@@ -3179,8 +3269,19 @@ Examples:
           `Reasons:\n${signal.reasons.map(r => `• ${r}`).join('\n')}`;
 
         if (shouldAutoExecute && account) {
-          // Auto-execute the signal
           const isDryRun = this.scalpWorker.config.dryRunMode;
+
+          // Check balance before executing (skip if insufficient)
+          if (!isDryRun) {
+            const canExecute = await this.checkBalanceForSignal(account.id!, signal);
+            if (!canExecute.ok) {
+              text += `\n\n⚠️ SKIPPED: ${canExecute.reason}`;
+              await this.bot.telegram.sendMessage(user.telegram_id, text);
+              continue;
+            }
+          }
+
+          // Auto-execute the signal
           text += isDryRun ? `\n\n📝 DRY RUN EXECUTING...` : `\n\n⚡ AUTO-EXECUTING...`;
 
           await this.bot.telegram.sendMessage(user.telegram_id, text);
