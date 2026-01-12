@@ -1340,6 +1340,15 @@ export class TelegramBot extends EventEmitter {
       );
       return;
     }
+
+    if (inputType === 'sub_custom') {
+      this.menuStates.set(userId, { ...state, inputMode: 'symbol', inputData: { target: 'subscription' } });
+      await ctx.reply(
+        'Enter symbol to subscribe (e.g., BTC or BTC/IDR):',
+        { reply_markup: { force_reply: true, selective: true } }
+      );
+      return;
+    }
   }
 
   // ============================================
@@ -2710,7 +2719,7 @@ Examples:
       case 'symbol':
         const symbol = text.toUpperCase().includes('/') ? text.toUpperCase() : `${text.toUpperCase()}/IDR`;
 
-        // Check if this is for scalp config or trading
+        // Check if this is for scalp config, subscription, or trading
         if (state.inputData?.target === 'scalp_config') {
           const symbols = text.split(',').map(s => {
             const sym = s.trim().toUpperCase();
@@ -2722,6 +2731,10 @@ Examples:
             `✅ Symbols set to: ${symbols.join(', ')}`,
             this.buildScalpConfigMenu()
           );
+        } else if (state.inputData?.target === 'subscription') {
+          // Subscribe to custom symbol
+          this.menuStates.delete(userId);
+          await this.subscribeToSymbol(ctx, symbol);
         } else {
           // Trading - show symbol actions
           this.menuStates.set(userId, { menu: 'trading', selectedSymbol: symbol });
