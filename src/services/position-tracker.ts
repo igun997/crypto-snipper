@@ -24,6 +24,9 @@ export class PositionTracker extends EventEmitter {
   private checkInterval: NodeJS.Timeout | null = null;
   private subscribedSymbols: Set<string> = new Set();
   private lastPrices: Map<string, number> = new Map();
+  // Track failed close attempts to prevent infinite retrying
+  private closeAttempts: Map<number, number> = new Map();
+  private readonly maxCloseAttempts: number = 3;
 
   /**
    * Start tracking positions
@@ -66,6 +69,20 @@ export class PositionTracker extends EventEmitter {
     this.subscribedSymbols.clear();
 
     console.log('  [PositionTracker] Stopped position monitoring');
+  }
+
+  /**
+   * Check if tracker is currently running
+   */
+  isTracking(): boolean {
+    return this.isRunning;
+  }
+
+  /**
+   * Clear close attempt counter (used when positions are manually cleared)
+   */
+  clearAttemptCounter(): void {
+    this.closeAttempts.clear();
   }
 
   /**
@@ -169,22 +186,56 @@ export class PositionTracker extends EventEmitter {
 
     // Auto-close if TP or SL hit
     if (hitTp || hitSl) {
-      console.log(`  [PositionTracker] ${hitTp ? 'TP' : 'SL'} hit for position ${position.id} (${position.symbol})`);
+      const positionId = position.id!;
 
-      const result = await tradingExecutor.closePosition(position.id!);
+      // Check if we've exceeded max close attempts
+      const attempts = this.closeAttempts.get(positionId) || 0;
+      if (attempts >= this.maxCloseAttempts) {
+        // Already tried too many times, skip this position
+        return;
+      }
+
+      console.log(`  [PositionTracker] ${hitTp ? 'TP' : 'SL'} hit for position ${positionId} (${position.symbol}) - attempt ${attempts + 1}/${this.maxCloseAttempts}`);
+
+      const result = await tradingExecutor.closePosition(positionId);
 
       if (result.success) {
+        // Clear attempts on success
+        this.closeAttempts.delete(positionId);
         this.emit('position:auto_closed', {
           ...update,
           reason: hitTp ? 'take_profit' : 'stop_loss',
           closedPosition: result.position,
         });
       } else {
-        console.error(`  [PositionTracker] Failed to close position ${position.id}:`, result.error);
-        this.emit('position:close_failed', {
-          ...update,
-          error: result.error,
-        });
+        // Increment attempts
+        this.closeAttempts.set(positionId, attempts + 1);
+
+        const errorMsg = result.error || 'Unknown error';
+        console.error(`  [PositionTracker] Failed to close position ${positionId}: ${errorMsg}`);
+
+        // Check if this is a balance/asset issue (position may already be closed manually)
+        const isBalanceError = errorMsg.includes('Insufficient balance') || errorMsg.includes('Insufficient');
+
+        if (attempts + 1 >= this.maxCloseAttempts) {
+          console.warn(`  [PositionTracker] Max attempts reached for position ${positionId}. Marking as failed.`);
+
+          if (isBalanceError) {
+            console.warn(`  [PositionTracker] Balance error - position may have been closed manually. Consider cleaning up via /positions menu.`);
+          }
+
+          this.emit('position:close_failed', {
+            ...update,
+            error: `${errorMsg} (max attempts reached)`,
+            permanent: true,
+          });
+        } else {
+          this.emit('position:close_failed', {
+            ...update,
+            error: errorMsg,
+            permanent: false,
+          });
+        }
       }
     }
   }

@@ -404,8 +404,11 @@ export class TelegramBot extends EventEmitter {
    * Build settings menu
    */
   private buildSettingsMenu(): ReturnType<typeof Markup.inlineKeyboard> {
+    const posTrackerStatus = positionTracker.isTracking() ? '🟢 ON' : '🔴 OFF';
     return Markup.inlineKeyboard([
       [Markup.button.callback('🔄 Auto Execute Toggle', 'config_user_auto_toggle')],
+      [Markup.button.callback(`📍 Position Tracker: ${posTrackerStatus}`, 'action_toggle_position_tracker')],
+      [Markup.button.callback('🗑️ Clear Stale Positions', 'action_clear_positions')],
       [Markup.button.callback('📋 Account Settings', 'action_account_list')],
       [Markup.button.callback('« Back', 'menu_main')],
     ]);
@@ -698,6 +701,74 @@ export class TelegramBot extends EventEmitter {
         }
       }
       await ctx.reply(text);
+      return;
+    }
+
+    // Position tracker toggle
+    if (action === 'toggle_position_tracker') {
+      if (positionTracker.isTracking()) {
+        positionTracker.stop();
+        await ctx.editMessageText(
+          '⚙️ Settings\n\n📍 Position Tracker: 🔴 OFF\n\nPosition tracking disabled.',
+          this.buildSettingsMenu()
+        );
+      } else {
+        await positionTracker.start();
+        await ctx.editMessageText(
+          '⚙️ Settings\n\n📍 Position Tracker: 🟢 ON\n\nPosition tracking enabled. Will monitor TP/SL.',
+          this.buildSettingsMenu()
+        );
+      }
+      return;
+    }
+
+    // Clear stale positions
+    if (action === 'clear_positions') {
+      const openPositions = orderRepo.getAllOpenPositions();
+      if (openPositions.length === 0) {
+        await ctx.reply('✅ No open positions to clear.');
+        return;
+      }
+
+      // Build confirmation with position list
+      let text = `🗑️ Clear ${openPositions.length} Open Positions?\n\n`;
+      text += 'This will mark positions as closed WITHOUT trading.\n';
+      text += 'Use this for stale positions that were already closed manually.\n\n';
+      for (const pos of openPositions.slice(0, 10)) {
+        text += `• ${pos.symbol} ${pos.side} - Entry: ${this.formatNumber(pos.entry_price)}\n`;
+      }
+      if (openPositions.length > 10) {
+        text += `... and ${openPositions.length - 10} more\n`;
+      }
+
+      await ctx.editMessageText(text, Markup.inlineKeyboard([
+        [Markup.button.callback('✅ Yes, Clear All', 'action_confirm_clear_positions')],
+        [Markup.button.callback('❌ Cancel', 'menu_settings')],
+      ]));
+      return;
+    }
+
+    if (action === 'confirm_clear_positions') {
+      const openPositions = orderRepo.getAllOpenPositions();
+      let cleared = 0;
+
+      for (const pos of openPositions) {
+        try {
+          // Mark position as closed in database without trading
+          orderRepo.closePosition(pos.id!, pos.entry_price, 0, 0); // Close at entry price, 0 P/L
+          cleared++;
+        } catch (error) {
+          console.error(`Failed to clear position ${pos.id}:`, error);
+        }
+      }
+
+      // Clear retry counters
+      positionTracker.clearAttemptCounter();
+
+      await ctx.editMessageText(
+        `✅ Cleared ${cleared} stale positions.\n\nPositions marked as closed (no trades executed).`,
+        this.buildSettingsMenu()
+      );
       return;
     }
 
@@ -3043,8 +3114,9 @@ Examples:
 
     console.log('Starting Telegram bot...');
 
-    // Start position tracker
-    await positionTracker.start();
+    // NOTE: Position tracker is NOT auto-started anymore
+    // User can enable it via Settings > Position Tracking
+    // This prevents auto-closing old stale positions on startup
 
     // Launch bot
     await this.bot.launch();

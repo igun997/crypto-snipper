@@ -323,14 +323,19 @@ export class IndodaxExchange {
         throw new Error(`Amount ${amount} is below minimum ${minAmount} for ${normalizedSymbol}`);
       }
 
-      // For market buy orders on Indodax, we need to provide the price
-      // to calculate total cost (amount * price)
+      // For market orders on Indodax, we need to provide the price
+      // Buy: to calculate total cost (amount * price)
+      // Sell: Indodax requires minimum price of 1 IDR
       let orderPrice = price;
-      if (type === 'market' && side === 'buy' && !orderPrice) {
-        // Fetch current ticker to get price for market buy
+      if (type === 'market' && !orderPrice) {
         const ticker = await this.exchange.fetchTicker(normalizedSymbol);
-        orderPrice = ticker.ask || ticker.last; // Use ask price for buying
-        console.log(`[Indodax] Market buy requires price, using ask: ${orderPrice}`);
+        if (side === 'buy') {
+          orderPrice = ticker.ask || ticker.last; // Use ask price for buying
+          console.log(`[Indodax] Market buy requires price, using ask: ${orderPrice}`);
+        } else {
+          orderPrice = ticker.bid || ticker.last; // Use bid price for selling
+          console.log(`[Indodax] Market sell requires price, using bid: ${orderPrice}`);
+        }
       }
 
       console.log(`[Indodax] Creating ${type} ${side} order: ${normalizedSymbol} amount=${amount} price=${orderPrice || 'market'}`);
@@ -340,7 +345,7 @@ export class IndodaxExchange {
         type,
         side,
         amount,
-        type === 'market' && side === 'buy' ? orderPrice : (type === 'limit' ? price : undefined)
+        type === 'market' ? orderPrice : (type === 'limit' ? price : undefined)
       );
 
       console.log(`[Indodax] Order created: ${order.id}`);
