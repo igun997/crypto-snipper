@@ -39,6 +39,7 @@ interface ScalpWorkerConfig {
   dryRunMode: boolean;
   dryRunBalance: number; // IDR
   tradingMode: 'long_only' | 'short_only' | 'both'; // Filter signals by direction
+  tradePercent: number; // Percentage of balance to use per trade
 }
 
 // Scalp worker state
@@ -96,6 +97,7 @@ export class TelegramBot extends EventEmitter {
       dryRunMode: false,
       dryRunBalance: 10000000, // 10 million IDR
       tradingMode: 'long_only', // Default to long only (buy with IDR)
+      tradePercent: 10, // Use 10% of balance per trade
     },
   };
 
@@ -369,6 +371,12 @@ export class TelegramBot extends EventEmitter {
         Markup.button.callback(`Conf: ${(cfg.minConfidence * 100).toFixed(0)}%`, 'noop'),
         Markup.button.callback('-', 'config_conf_-5'),
         Markup.button.callback('+', 'config_conf_+5'),
+      ],
+      // Trade percent row (how much of balance to use per trade)
+      [
+        Markup.button.callback(`Trade: ${cfg.tradePercent}%`, 'noop'),
+        Markup.button.callback('-', 'config_trade_-5'),
+        Markup.button.callback('+', 'config_trade_+5'),
       ],
       // Auto execute toggle
       [Markup.button.callback(`Auto Execute: ${cfg.autoExecute ? 'ON' : 'OFF'}`, 'config_auto_toggle')],
@@ -1087,6 +1095,18 @@ export class TelegramBot extends EventEmitter {
         this.buildScalpConfigMenu()
       );
       await ctx.answerCbQuery(`Confidence: ${newConf.toFixed(0)}%`);
+      return;
+    }
+
+    if (config.startsWith('trade_')) {
+      const delta = parseFloat(config.replace('trade_', ''));
+      const newTrade = Math.max(5, Math.min(100, this.scalpWorker.config.tradePercent + delta));
+      this.scalpWorker.config.tradePercent = newTrade;
+      await ctx.editMessageText(
+        '⚙️ Scalp Configuration\n\nAdjust settings with +/- buttons:',
+        this.buildScalpConfigMenu()
+      );
+      await ctx.answerCbQuery(`Trade: ${newTrade}% of balance`);
       return;
     }
 
@@ -3300,9 +3320,10 @@ Examples:
           await this.bot.telegram.sendMessage(user.telegram_id, text);
 
           // Execute the signal (use dry run executor if dry run mode is enabled)
+          const tradePercent = this.scalpWorker.config.tradePercent;
           const result = isDryRun
-            ? await dryRunExecutor.executeScalpSignal(account.id!, signal)
-            : await tradingExecutor.executeScalpSignal(account.id!, signal);
+            ? await dryRunExecutor.executeScalpSignal(account.id!, signal, tradePercent)
+            : await tradingExecutor.executeScalpSignal(account.id!, signal, tradePercent);
 
           if (result.success) {
             await this.bot.telegram.sendMessage(

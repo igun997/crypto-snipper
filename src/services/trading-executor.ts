@@ -240,7 +240,13 @@ export class TradingExecutor extends EventEmitter {
       // Check minimum order amount
       const minAmount = await exchange.getMinOrderAmount(signal.symbol);
       if (tradeAmount < minAmount) {
-        return { success: false, error: `Amount ${tradeAmount} below minimum ${minAmount}` };
+        const minValueNeeded = minAmount * signal.price;
+        const minBalanceNeeded = minValueNeeded / (amountPercent / 100);
+        return {
+          success: false,
+          error: `Amount ${tradeAmount.toFixed(8)} ${base} below minimum ${minAmount} ${base}. ` +
+                 `Need min Rp ${Math.ceil(minBalanceNeeded).toLocaleString()} balance or increase trade %`
+        };
       }
 
       // Execute entry order
